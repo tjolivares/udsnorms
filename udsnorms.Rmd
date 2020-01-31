@@ -1,0 +1,205 @@
+---
+title: "UDS Norm Visualization"
+author: "TJ Olivares"
+date: "January 31, 2020"
+output: pdf_document
+includes:
+      in_header: header.tex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(ggplot2)
+library(plotly)
+library(shiny)
+```
+
+
+## Idea/Primary Aim:
+  The objective of this R package will be to create a series of functions that will compute and visualize adjusted neuropsychological test scores from the Uniform Data Set (UDS) battery as described by Weintraub et al. in the original article "Version 3 of the Alzheimer Disease Centers' Neuropsychological Test Battery in the Uniform Data Set (UDS)" (2018). 
+  I currently work as a clinical research coordinator in the Indiana Alzheimer Disease Center (IADC). One of my roles includes the administration of neuropsychological tests to research participants. These tests consist of data collection protocols that are used systematically to measure cognitive performance in dementia and mild cognitive impairment due to Alzheimer's Disease. The tests are scored and subsequently adjusted for age, sex, and education. Weintraub et al. have provided the normative test scores for a cohort of cognitively normal individuals from the National Alzheimer Coordinating Center (NACC) to be recommended for use for all Alzheimer's Disease Centers. Depending on the number of cognitive tests administered, testing can take up to 2 hours. Scoring takes up to 3 hours. Finally, adjusting each raw score individually can take up to 1 hour. 
+  The primary aim of this R package will be to make the norming process more efficient and useful. Raw test scores for an individual over time, or a group of individuals will be able to be computed and visualized with the functions included in this package. As a result, the scoring process will take less time and will adapt to a current goal of our center to be able to visualize data in a better manner. Additionally, this package can be built upon in order to adapt to a particular analysis of a researcher that is using IADC neuropsychological data. 
+  
+\vspace{10mm}
+
+## Code Sample, Proof-of-concept
+
+
+Read in data from
+  1) UDS norm data NACC
+  2) Sample raw scores sheet
+```{r}
+
+uds_norm_data_full <- read_excel("//client/Y$/Biostatistics Computing/Midterm/UDS3_NormsCalculator.xlsx", sheet = "Regression")
+uds_norm_data <- read_excel("//client/Y$/Biostatistics Computing/Midterm/UDS3_NormsCalculator_tj.xlsx")
+raw_scores <- read_excel("//client/Y$/Biostatistics Computing/Midterm/RawScores.xlsx")
+
+```
+View Structure of the datasets
+```{r}
+
+str(uds_norm_data)
+str(raw_scores)
+
+```
+Data Wrangling
+```{r}
+wrangle_raw_uds_scores <- function(x){
+  
+  long_raw_scores <- x %>% gather(Dependent, Score, MOCATOTS:UDSVERTN)
+combined <- left_join(long_raw_scores, uds_norm_data, by = "Dependent")
+  
+}
+
+wrangled_scores <- wrangle_raw_uds_scores(raw_scores)
+str(wrangled_scores)
+
+```
+Function
+```{r}
+run_uds_norms <- function(data) {
+  
+  z_score <- (data$Score - 
+                
+                (data$intercept_est + 
+                (data$sex*data$female_est) + 
+                (data$age*data$naccage_est) + 
+                (data$edu*data$edu_est))) / 
+    
+             (data$rmse)
+  
+  
+  }
+
+```
+Mutate Adjusted Score
+```{r}
+  
+ mutate_adjusted_score <- function(x) {
+   
+   adjusted <- x %>% mutate(adjusted_score = ifelse((grepl("TRAILA", x$Dependent) == TRUE) | grepl("TRAILB", x$Dependent) == TRUE, run_uds_norms(x)*-1, run_uds_norms(x))) %>% mutate(date = as.Date(date)) 
+ }
+
+adjusted <- mutate_adjusted_score(wrangled_scores)
+adjusted
+ 
+ 
+
+```
+Visualization Wrangling
+```{r}
+
+  hline_coordinates <- data.frame(Quantile_Name = c("Severely Impaired", "Moderately Impaired", "Mildly Impaired", "Low Average", "Average", "High Average", "Superior", "Very Superior"), Quantile_Values = c(0.01, 0.0199, 0.0899, 0.2499, 0.7499, 0.9099, 0.9799, 1.00))
+
+  quantile_index <- data.frame(xmin = as.Date("2018-01-01"), xmax = as.Date("2021-01-01"), ymin = c(0, 0.01, 0.02, 0.09, 0.25, 0.75, 0.91, 0.98), ymax = c(0.01, 0.0199, 0.0899, 0.2499, 0.7499, 0.9099, 0.9799, 1.00), z=c("Severely Impaired", "Moderately Impaired", "Mildly Impaired", "Low Average", "Average", "High Average", "Superior", "Very Superior"))
+
+```
+
+Shiny Application 1
+```{r}
+ui <- fluidPage(
+  
+  sidebarLayout(
+    
+    #Inputs
+    sidebarPanel(
+      
+      # Input here
+      selectInput(inputId = 'id',
+                  label = 'Select CCID',
+                  choices = unique(adjusted$id)),
+      sliderInput(inputId = 'start', label = 'select start time',
+                  min = as.Date("2018-01-01"), max = max(adjusted$date), value = as.Date("2018-01-01")),
+      sliderInput(inputId = 'end', label = 'select end time',
+                  min = as.Date("2018-01-01"), max = max(adjusted$date), value = max(adjusted$date))
+    ),
+    
+    # Outputs
+    mainPanel(
+      plotOutput('line')
+    )
+  )
+)
+
+# Server
+server <- function(input, output) {
+  
+  dat <- reactive({
+    ## need input$start < input$end
+    if (input$start < input$end)
+    {
+      adjusted %>% filter(id == input$id & date <= input$end & date >= input$start)
+    } else {
+      adjusted %>% filter(id == input$id)
+    }
+  })
+  
+  output$line <- renderPlot({
+    ggplot(dat(), aes(x=date, y=pnorm(adjusted_score))) + geom_rect(data=quantile_index, inherit.aes = FALSE, aes(xmin=xmin, xmax=xmax, ymin=ymin, ymax=ymax, fill=z), alpha=0.35, size=0.5) + geom_point() + facet_wrap(~Dependent) + labs(title = "Neuropsych Testing \n(Normative Percentile Scores Adjusted for Age, Sex, and Education", x="Year", y="Percentile") + theme(plot.title = element_text(size = 12), axis.title.x = element_text(size = 10), axis.text.x = element_text(angle = 90), legend.title = element_blank()) + scale_x_date(date_labels = "%Y") + scale_y_continuous(breaks = c(0,0.5,1.0)) + scale_fill_manual(breaks=c("Very Superior", "Superior", "High Average", "Average", "Low Average", "Mildly Impaired", "Moderately Impaired", "Severely Impaired"), values=c("lightgoldenrod3", "yellowgreen", "orange2", "brown3", "red2", "red4", "green3", "green4")) 
+  })
+}
+
+# Create a Shiny app object
+shinyApp(ui = ui, server = server)
+
+```
+Shiny Application 2
+```{r}
+ui <- fluidPage(
+  
+  sidebarLayout(
+    
+    #Inputs
+    sidebarPanel(
+      
+      # Input here
+      selectInput(inputId = 'id',
+                  label = 'Select CCID',
+                  choices = unique(adjusted$id)),
+      selectInput(inputId = 'Dependent',
+                  label = 'Select Test',
+                  choices = unique(adjusted$Dependent),
+                  selected = "MOCATOTS"),
+      sliderInput(inputId = 'start', label = 'select start time',
+                  min = as.Date("2018-01-01"), max = max(adjusted$date), value = as.Date("2018-01-01")),
+      sliderInput(inputId = 'end', label = 'select end time',
+                  min = as.Date("2018-01-01"), max = max(adjusted$date), value = max(adjusted$date)),
+      actionButton(inputId = 'submit',
+                   label = 'Update Plot')
+    ),
+    
+    # Outputs
+    mainPanel(
+      plotlyOutput('line')
+    )
+  )
+)
+
+# Server
+server <- function(input, output) {
+  
+  line <- eventReactive(input$submit, {
+    if (input$start < input$end)
+    {
+    dat <- adjusted %>% filter(id == input$id & Dependent == input$Dependent & date <= input$end & date >= input$start)
+  } else {
+    dat <- adjusted %>% filter(id == input$id & Dependent == input$Dependent)
+  }
+   ggplotly(ggplot(dat, aes(x=date, y=pnorm(adjusted_score))) + geom_rect(data=quantile_index, inherit.aes = FALSE, aes(xmin=xmin, xmax=xmax, ymin=ymin, ymax=ymax, fill=z), alpha=0.35, size=0.5) + geom_point() + labs(title = "Neuropsych Testing \n(Normative Percentile Scores Adjusted for Age, Sex, and Education", x="Year", y="Percentile") + theme(plot.title = element_text(size = 12), axis.title.x = element_text(size = 10), axis.text.x = element_text(angle = 90), legend.title = element_blank()) + scale_x_date(date_labels = "%Y") + scale_y_continuous(breaks = c(0,0.5,1.0)) + scale_fill_manual(breaks=c("Very Superior", "Superior", "High Average", "Average", "Low Average", "Mildly Impaired", "Moderately Impaired", "Severely Impaired"), values=c("lightgoldenrod3", "yellowgreen", "orange2", "brown3", "red2", "red4", "green3", "green4"))) 
+  })
+  
+output$line <- renderPlotly({
+  line()
+  })
+
+}
+
+# Create a Shiny app object
+shinyApp(ui = ui, server = server)
+
+```
